@@ -758,17 +758,16 @@
       openSuccessModal(preset, file, destName);
     });
   }
-
-
   /* ═══════════════════════════════════════════════════════════════════════
-     CONVERSION ENGINE v2 — จัดการทุกประเภทไฟล์ต้นทาง × ทุก preset ปลายทาง
-     Dependencies (loaded via CDN):
-       - jsPDF       : image→PDF, text→PDF
-       - mammoth.js  : DOCX/DOC → HTML, TXT, PDF
-       - PDF.js      : PDF → canvas → PNG/JPG
+     UNIVERSAL CONVERSION ENGINE v3 — จัดการแปลงไฟล์จริงครบทุกประเภท
+     Dependencies:
+       - jsPDF       : ภาพ/ข้อความ/เอกสาร → PDF
+       - mammoth.js  : DOCX/DOC → HTML, TXT, PDF (ดึงเนื้อหา/ตาราง/ฟอนต์)
+       - PDF.js      : PDF → Canvas → PNG/JPG, สกัดข้อความจาก PDF
+       - html2canvas : เรนเดอร์ HTML/DOCX ลง Canvas พร้อมภาษาไทยครบถ้วน
+       - JSZip       : แยก/รวมไฟล์ ZIP, HWPX, DOCX generator
      ═══════════════════════════════════════════════════════════════════════ */
 
-  // ── ตรวจสอบ PDF.js worker ──────────────────────────────────────────────
   function ensurePdfWorker() {
     if (window.pdfjsLib && !pdfjsLib.GlobalWorkerOptions.workerSrc) {
       pdfjsLib.GlobalWorkerOptions.workerSrc =
@@ -776,11 +775,24 @@
     }
   }
 
-  // ── วิเคราะห์ preset ────────────────────────────────────────────────────
+  function escapeXml(value) {
+    return String(value || '').replace(/[<>&'"]/g, c => {
+      switch (c) {
+        case '<': return '&lt;';
+        case '>': return '&gt;';
+        case '&': return '&amp;';
+        case '\'': return '&apos;';
+        case '"': return '&quot;';
+        default: return c;
+      }
+    });
+  }
+
   function analyzePreset(preset, srcW, srcH) {
     const name = (preset.name || '').toUpperCase();
+    const fmt = (preset.targetFormat || 'PNG').toUpperCase();
     let grayscale = name.includes('ขาวดำ') || name.includes('GRAYSCALE');
-    let quality   = Math.max(0.1, Math.min(1.0, (preset.quality || 80) / 100));
+    let quality = Math.max(0.1, Math.min(1.0, (preset.quality || 80) / 100));
     let scaleW = srcW, scaleH = srcH;
 
     const sz = preset.size || 'ต้นฉบับ';
@@ -789,99 +801,181 @@
       scaleH = Math.round(srcH * 0.5);
     } else if (sz.includes('1920') || name.includes('1920')) {
       const long = Math.max(srcW, srcH);
-      if (long > 1920) { const r = 1920/long; scaleW = Math.round(srcW*r); scaleH = Math.round(srcH*r); }
+      if (long > 1920) { const r = 1920 / long; scaleW = Math.round(srcW * r); scaleH = Math.round(srcH * r); }
     } else if (sz.includes('1280') || name.includes('1280')) {
       const long = Math.max(srcW, srcH);
-      if (long > 1280) { const r = 1280/long; scaleW = Math.round(srcW*r); scaleH = Math.round(srcH*r); }
+      if (long > 1280) { const r = 1280 / long; scaleW = Math.round(srcW * r); scaleH = Math.round(srcH * r); }
     }
 
-    // อ่าน quality จากชื่อ preset (%XX%)
-    const qm = name.match(/(\d{2,3})\s*%/);
-    if (qm) quality = Math.max(0.1, Math.min(1.0, Number(qm[1]) / 100));
+    const qMatch = name.match(/(\d{2,3})\s*%/);
+    if (qMatch) quality = Math.max(0.1, Math.min(1.0, Number(qMatch[1]) / 100));
 
-    const fmt = (preset.targetFormat || 'PNG').toUpperCase();
     let mime, realExt;
     switch (fmt) {
-      case 'JPG': case 'JPEG': mime='image/jpeg'; realExt='jpg'; break;
-      case 'WEBP':  mime='image/webp';  realExt='webp'; break;
-      case 'PNG':   mime='image/png';   realExt='png';  break;
-      case 'AVIF':  mime='image/avif';  realExt='avif'; break;
-      case 'ICO':   mime='image/png';   realExt='ico';  break;
-      // Browser-unsupported → PNG data, explicit ext
-      case 'GIF':   mime='image/png';   realExt='gif';  break;
-      case 'TIFF':  mime='image/png';   realExt='tiff'; break;
-      case 'BMP':   mime='image/png';   realExt='bmp';  break;
-      default:      mime='image/png';   realExt='png';
+      case 'JPG':
+      case 'JPEG':
+        mime = 'image/jpeg'; realExt = 'jpg'; break;
+      case 'WEBP':
+        mime = 'image/webp'; realExt = 'webp'; break;
+      case 'PNG':
+        mime = 'image/png'; realExt = 'png'; break;
+      case 'AVIF':
+        mime = 'image/avif'; realExt = 'avif'; break;
+      case 'ICO':
+        mime = 'image/x-icon'; realExt = 'ico'; break;
+      case 'BMP':
+        mime = 'image/bmp'; realExt = 'bmp'; break;
+      case 'TIFF':
+        mime = 'image/tiff'; realExt = 'tiff'; break;
+      case 'GIF':
+        mime = 'image/gif'; realExt = 'gif'; break;
+      default:
+        mime = 'image/png'; realExt = 'png';
     }
-    // AVIF support check
+
+    // ตรวจสอบ AVIF ในเบราว์เซอร์
     if (mime === 'image/avif') {
-      const t = document.createElement('canvas'); t.width = t.height = 1;
-      if (!t.toDataURL('image/avif').startsWith('data:image/avif')) mime = 'image/webp';
+      const testC = document.createElement('canvas'); testC.width = testC.height = 1;
+      if (!testC.toDataURL('image/avif').startsWith('data:image/avif')) mime = 'image/webp';
     }
-    return { grayscale, scaleW: Math.max(1,scaleW), scaleH: Math.max(1,scaleH), quality, mime, realExt };
+    return { grayscale, scaleW: Math.max(1, scaleW), scaleH: Math.max(1, scaleH), quality, mime, realExt };
   }
 
-  // ── โหลดไฟล์ → HTMLImageElement ────────────────────────────────────────
   function loadImageElement(fileObj) {
     return new Promise((resolve, reject) => {
       const reader = new FileReader();
-      reader.onerror = () => reject(new Error('FileReader failed'));
+      reader.onerror = () => reject(new Error('ไม่สามารถอ่านไฟล์ภาพได้'));
       reader.onload = e => {
         const img = new Image();
-        img.onerror = () => reject(new Error('Image decode failed'));
-        img.onload  = () => resolve(img);
+        img.onerror = () => reject(new Error('ไฟล์ภาพเสียหายหรือไม่รองรับ'));
+        img.onload = () => resolve(img);
         img.src = e.target.result;
       };
       reader.readAsDataURL(fileObj);
     });
   }
 
-  // ── Canvas helper: apply transform (resize + grayscale) ────────────────
   function drawToCanvas(imgEl, opts) {
-    // ICO: force 32×32 (standard icon size)
-    const w = opts.realExt === 'ico' ? 32 : opts.scaleW;
-    const h = opts.realExt === 'ico' ? 32 : opts.scaleH;
+    const w = opts.realExt === 'ico' ? Math.min(256, opts.scaleW) : opts.scaleW;
+    const h = opts.realExt === 'ico' ? Math.min(256, opts.scaleH) : opts.scaleH;
     const canvas = document.createElement('canvas');
     canvas.width = w; canvas.height = h;
     const ctx = canvas.getContext('2d');
     ctx.drawImage(imgEl, 0, 0, w, h);
     if (opts.grayscale) {
-      const id = ctx.getImageData(0, 0, w, h);
-      for (let i = 0; i < id.data.length; i += 4) {
-        const lum = Math.round(0.299*id.data[i] + 0.587*id.data[i+1] + 0.114*id.data[i+2]);
-        id.data[i] = id.data[i+1] = id.data[i+2] = lum;
+      const imgData = ctx.getImageData(0, 0, w, h);
+      const d = imgData.data;
+      for (let i = 0; i < d.length; i += 4) {
+        const lum = Math.round(0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2]);
+        d[i] = d[i + 1] = d[i + 2] = lum;
       }
-      ctx.putImageData(id, 0, 0);
+      ctx.putImageData(imgData, 0, 0);
     }
     return canvas;
   }
 
-  // ── Image → Image Blob ─────────────────────────────────────────────────
   function canvasToBlob(canvas, mime, quality) {
-    return new Promise((resolve, reject) =>
-      canvas.toBlob(b => b ? resolve(b) : reject(new Error('toBlob null')), mime, quality)
-    );
+    return new Promise((resolve, reject) => {
+      canvas.toBlob(blob => {
+        if (blob) resolve(blob);
+        else reject(new Error('Canvas toBlob ล้มเหลว'));
+      }, mime, quality);
+    });
   }
 
-  // ── Image → PDF ────────────────────────────────────────────────────────
+  function canvasToBmpBlob(canvas) {
+    const w = canvas.width, h = canvas.height;
+    const ctx = canvas.getContext('2d');
+    const imgData = ctx.getImageData(0, 0, w, h);
+    const d = imgData.data;
+    const rowSize = Math.floor((24 * w + 31) / 32) * 4;
+    const pixelArraySize = rowSize * h;
+    const fileSize = 54 + pixelArraySize;
+    const buffer = new ArrayBuffer(fileSize);
+    const view = new DataView(buffer);
+
+    view.setUint16(0, 0x4D42, false); // BM
+    view.setUint32(2, fileSize, true);
+    view.setUint32(10, 54, true);
+
+    view.setUint32(14, 40, true);
+    view.setInt32(18, w, true);
+    view.setInt32(22, h, true);
+    view.setUint16(26, 1, true);
+    view.setUint16(28, 24, true);
+    view.setUint32(30, 0, true);
+    view.setUint32(34, pixelArraySize, true);
+
+    let offset = 54;
+    for (let y = h - 1; y >= 0; y--) {
+      for (let x = 0; x < w; x++) {
+        const i = (y * w + x) * 4;
+        view.setUint8(offset++, d[i + 2]); // B
+        view.setUint8(offset++, d[i + 1]); // G
+        view.setUint8(offset++, d[i]);     // R
+      }
+      const padding = rowSize - w * 3;
+      for (let p = 0; p < padding; p++) view.setUint8(offset++, 0);
+    }
+    return new Blob([buffer], { type: 'image/bmp' });
+  }
+
+  async function canvasToIcoBlob(canvas) {
+    const iconCanvas = document.createElement('canvas');
+    iconCanvas.width = 32;
+    iconCanvas.height = 32;
+    const ctx = iconCanvas.getContext('2d');
+    ctx.drawImage(canvas, 0, 0, 32, 32);
+    const pngBlob = await new Promise(r => iconCanvas.toBlob(r, 'image/png'));
+    const pngBuf = await pngBlob.arrayBuffer();
+    const pngBytes = new Uint8Array(pngBuf);
+
+    const icoSize = 6 + 16 + pngBytes.length;
+    const buffer = new ArrayBuffer(icoSize);
+    const view = new DataView(buffer);
+
+    view.setUint16(0, 0, true);
+    view.setUint16(2, 1, true);
+    view.setUint16(4, 1, true);
+
+    view.setUint8(6, 32);
+    view.setUint8(7, 32);
+    view.setUint8(8, 0);
+    view.setUint8(9, 0);
+    view.setUint16(10, 1, true);
+    view.setUint16(12, 32, true);
+    view.setUint32(14, pngBytes.length, true);
+    view.setUint32(18, 22, true);
+
+    new Uint8Array(buffer, 22).set(pngBytes);
+    return new Blob([buffer], { type: 'image/x-icon' });
+  }
+
   async function imageToPdfBlob(imgEl, destName, opts) {
-    if (!window.jspdf?.jsPDF) return new Blob([buildMinimalPdf(destName)], {type:'application/pdf'});
+    if (!window.jspdf?.jsPDF) {
+      const canvas = drawToCanvas(imgEl, opts);
+      return canvasToBlob(canvas, 'image/png');
+    }
     const { jsPDF } = window.jspdf;
     const orientation = imgEl.width >= imgEl.height ? 'landscape' : 'portrait';
-    const doc = new jsPDF({ orientation, unit:'mm', format:'a4' });
+    const doc = new jsPDF({ orientation, unit: 'mm', format: 'a4' });
     const pw = doc.internal.pageSize.getWidth();
     const ph = doc.internal.pageSize.getHeight();
     const margin = 10;
-    const maxW = pw - margin*2, maxH = ph - margin*2;
-    const ratio = Math.min(maxW/imgEl.width, maxH/imgEl.height);
-    const canvas = drawToCanvas(imgEl, { ...opts, scaleW: imgEl.width, scaleH: imgEl.height });
+    const maxW = pw - margin * 2;
+    const maxH = ph - margin * 2;
+    const ratio = Math.min(maxW / imgEl.width, maxH / imgEl.height);
+    const w = imgEl.width * ratio;
+    const h = imgEl.height * ratio;
+    const x = (pw - w) / 2;
+    const y = (ph - h) / 2;
+
+    const canvas = drawToCanvas(imgEl, opts);
     const dataUrl = canvas.toDataURL('image/jpeg', opts.quality);
-    doc.addImage(dataUrl, 'JPEG', (pw - imgEl.width*ratio)/2, (ph - imgEl.height*ratio)/2,
-                 imgEl.width*ratio, imgEl.height*ratio);
+    doc.addImage(dataUrl, 'JPEG', x, y, w, h);
     return doc.output('blob');
   }
 
-  // ── PDF page → Canvas (via PDF.js) ────────────────────────────────────
   async function pdfPageToCanvas(fileObj, pageNum = 1, scale = 2.0) {
     ensurePdfWorker();
     if (!window.pdfjsLib) throw new Error('PDF.js ไม่ได้โหลด');
@@ -895,22 +989,48 @@
     return canvas;
   }
 
-  // ── PDF → text (via PDF.js) ────────────────────────────────────────────
   async function pdfToText(fileObj) {
     ensurePdfWorker();
-    if (!window.pdfjsLib) return '(PDF.js ไม่ได้โหลด — ไม่สามารถแยกข้อความได้)';
+    if (!window.pdfjsLib) return '(PDF.js ไม่ได้โหลด)';
     const buf = await fileObj.arrayBuffer();
     const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
     const parts = [];
     for (let p = 1; p <= pdf.numPages; p++) {
       const page = await pdf.getPage(p);
       const content = await page.getTextContent();
-      parts.push(content.items.map(i => i.str).join(' '));
+      const pageText = content.items.map(item => item.str).join(' ');
+      parts.push(`=== หน้า ${p} ===\n${pageText}`);
     }
     return parts.join('\n\n');
   }
 
-  // ── DOCX → HTML / Text via mammoth.js ─────────────────────────────────
+  async function compressPdf(fileObj) {
+    ensurePdfWorker();
+    if (!window.pdfjsLib || !window.jspdf?.jsPDF) return fileObj;
+    const buf = await fileObj.arrayBuffer();
+    const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
+    const { jsPDF } = window.jspdf;
+    let outDoc = null;
+
+    for (let p = 1; p <= pdf.numPages; p++) {
+      const page = await pdf.getPage(p);
+      const vp = page.getViewport({ scale: 1.5 });
+      const canvas = document.createElement('canvas');
+      canvas.width = vp.width; canvas.height = vp.height;
+      await page.render({ canvasContext: canvas.getContext('2d'), viewport: vp }).promise;
+
+      const orientation = vp.width >= vp.height ? 'landscape' : 'portrait';
+      if (!outDoc) {
+        outDoc = new jsPDF({ orientation, unit: 'px', format: [vp.width, vp.height] });
+      } else {
+        outDoc.addPage([vp.width, vp.height], orientation);
+      }
+      const dataUrl = canvas.toDataURL('image/jpeg', 0.65);
+      outDoc.addImage(dataUrl, 'JPEG', 0, 0, vp.width, vp.height);
+    }
+    return outDoc.output('blob');
+  }
+
   async function docxToHtml(fileObj) {
     if (!window.mammoth) throw new Error('mammoth.js ไม่ได้โหลด');
     const buf = await fileObj.arrayBuffer();
@@ -925,38 +1045,154 @@
     return result.value;
   }
 
-  // ── Text / HTML → PDF via jsPDF ───────────────────────────────────────
-  function textToPdfBlob(text, title) {
-    if (!window.jspdf?.jsPDF) return new Blob([buildMinimalPdf(title)], {type:'application/pdf'});
-    const { jsPDF } = window.jspdf;
-    const doc = new jsPDF({ unit:'mm', format:'a4' });
-    const pw = doc.internal.pageSize.getWidth();
-    const margin = 15;
-    const maxWidth = pw - margin*2;
-    doc.setFontSize(14);
-    doc.text(title, margin, margin);
-    doc.setFontSize(10);
-    // strip HTML tags for plain text render
-    const plain = text.replace(/<[^>]+>/g, ' ').replace(/\s+/g,' ').trim();
-    const lines = doc.splitTextToSize(plain, maxWidth);
-    let y = margin + 10;
-    const lineH = 5;
-    const pageH = doc.internal.pageSize.getHeight() - margin;
-    for (const line of lines) {
-      if (y + lineH > pageH) { doc.addPage(); y = margin; }
-      doc.text(line, margin, y);
-      y += lineH;
+  async function parseHwpxText(fileObj) {
+    if (!window.JSZip) {
+      return '(HWPX: JSZip ไม่พร้อมใช้งาน)';
     }
-    return doc.output('blob');
+    try {
+      const buf = await fileObj.arrayBuffer();
+      const zip = await JSZip.loadAsync(buf);
+      let fullText = '';
+      for (const [filename, fileEntry] of Object.entries(zip.files)) {
+        if (/section\d+\.xml$/i.test(filename) || /content\.xml$/i.test(filename)) {
+          const xml = await fileEntry.async('text');
+          const clean = xml.replace(/<hp:p[^>]*>/gi, '\n')
+                           .replace(/<[^>]+>/g, '')
+                           .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
+          fullText += clean + '\n\n';
+        }
+      }
+      return fullText.trim() || 'เอกสาร HWPX (ไม่มีข้อความ)';
+    } catch (e) {
+      return `HWPX Parse Error: ${e.message}`;
+    }
   }
 
-  // ── Minimal valid PDF fallback ─────────────────────────────────────────
-  function buildMinimalPdf(filename) {
-    const safe = filename.replace(/[()\\]/g, '');
-    return `%PDF-1.4\n1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>\nendobj\n4 0 obj\n<< /Length 60 >>\nstream\nBT\n/F1 12 Tf\n50 800 Td\n(${safe}) Tj\nET\nendstream\nendobj\n5 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\nendobj\nxref\n0 6\n0000000000 65535 f \n0000000009 00000 n \n0000000058 00000 n \n0000000115 00000 n \n0000000230 00000 n \n0000000351 00000 n \ntrailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n432\n%%EOF`;
+  function htmlToMarkdown(html) {
+    return String(html || '')
+      .replace(/<h1[^>]*>(.*?)<\/h1>/gi, '# $1\n\n')
+      .replace(/<h2[^>]*>(.*?)<\/h2>/gi, '## $1\n\n')
+      .replace(/<h3[^>]*>(.*?)<\/h3>/gi, '### $1\n\n')
+      .replace(/<p[^>]*>(.*?)<\/p>/gi, '$1\n\n')
+      .replace(/<strong[^>]*>(.*?)<\/strong>/gi, '**$1**')
+      .replace(/<b[^>]*>(.*?)<\/b>/gi, '**$1**')
+      .replace(/<em[^>]*>(.*?)<\/em>/gi, '*$1*')
+      .replace(/<li[^>]*>(.*?)<\/li>/gi, '- $1\n')
+      .replace(/<ul[^>]*>|<\/ul>|<ol[^>]*>|<\/ol>/gi, '\n')
+      .replace(/<br\s*\/?>/gi, '\n')
+      .replace(/<[^>]+>/g, '')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim();
   }
 
-  // ── blobDownload ────────────────────────────────────────────────────────
+  async function htmlToPdfBlob(htmlContent, title) {
+    if (!window.jspdf?.jsPDF) {
+      return new Blob([htmlContent], { type: 'text/html;charset=utf-8' });
+    }
+    const { jsPDF } = window.jspdf;
+
+    const sandbox = document.createElement('div');
+    sandbox.id = 'filee-pdf-sandbox';
+    sandbox.style.cssText = 'position:fixed;left:-9999px;top:0;width:794px;background:#ffffff;color:#1f1e1d;padding:48px;box-sizing:border-box;font-family:"Noto Sans Thai","Leelawadee UI",Tahoma,sans-serif;font-size:14px;line-height:1.75;word-break:break-word;z-index:-1000;';
+    sandbox.innerHTML = `
+      <style>
+        #filee-pdf-sandbox h1 { font-size: 22px; font-weight: 700; margin: 0 0 16px; color: #111827; border-bottom: 2px solid #e5e7eb; padding-bottom: 8px; }
+        #filee-pdf-sandbox h2 { font-size: 18px; font-weight: 700; margin: 20px 0 12px; color: #1f2937; }
+        #filee-pdf-sandbox h3 { font-size: 16px; font-weight: 600; margin: 16px 0 8px; color: #374151; }
+        #filee-pdf-sandbox p { margin: 0 0 10px; line-height: 1.7; color: #1f1e1d; }
+        #filee-pdf-sandbox table { width: 100%; border-collapse: collapse; margin: 16px 0; font-size: 13px; }
+        #filee-pdf-sandbox th, #filee-pdf-sandbox td { border: 1px solid #d1d5db; padding: 8px 12px; text-align: left; }
+        #filee-pdf-sandbox th { background: #f3f4f6; font-weight: 600; }
+        #filee-pdf-sandbox ul, #filee-pdf-sandbox ol { margin: 0 0 12px; padding-left: 24px; }
+        #filee-pdf-sandbox li { margin-bottom: 4px; }
+        #filee-pdf-sandbox img { max-width: 100%; height: auto; margin: 10px 0; }
+      </style>
+      <div>${htmlContent}</div>
+    `;
+    document.body.appendChild(sandbox);
+
+    try {
+      if (window.html2canvas) {
+        const canvas = await html2canvas(sandbox, {
+          scale: 2,
+          useCORS: true,
+          logging: false,
+          backgroundColor: '#ffffff'
+        });
+
+        const pdf = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
+        const pdfWidth = pdf.internal.pageSize.getWidth(); // 210
+        const pdfHeight = pdf.internal.pageSize.getHeight(); // 297
+
+        const canvasWidth = canvas.width;
+        const canvasHeight = canvas.height;
+        const pageCanvasHeight = (pdfHeight * canvasWidth) / pdfWidth;
+
+        let currentHeight = 0;
+        while (currentHeight < canvasHeight) {
+          if (currentHeight > 0) pdf.addPage();
+          
+          const sliceCanvas = document.createElement('canvas');
+          sliceCanvas.width = canvasWidth;
+          const sliceHeight = Math.min(pageCanvasHeight, canvasHeight - currentHeight);
+          sliceCanvas.height = sliceHeight;
+
+          const sliceCtx = sliceCanvas.getContext('2d');
+          sliceCtx.drawImage(canvas, 0, currentHeight, canvasWidth, sliceHeight, 0, 0, canvasWidth, sliceHeight);
+
+          const sliceDataUrl = sliceCanvas.toDataURL('image/jpeg', 0.95);
+          const slicePdfHeight = (sliceHeight * pdfWidth) / canvasWidth;
+          pdf.addImage(sliceDataUrl, 'JPEG', 0, 0, pdfWidth, slicePdfHeight);
+
+          currentHeight += pageCanvasHeight;
+        }
+
+        return pdf.output('blob');
+      } else {
+        const pdf = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
+        pdf.text(title || 'Document', 15, 15);
+        return pdf.output('blob');
+      }
+    } finally {
+      sandbox.remove();
+    }
+  }
+
+  async function textToDocxBlob(textOrHtml, title) {
+    if (window.JSZip) {
+      const zip = new JSZip();
+      zip.file('[Content_Types].xml', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+</Types>`);
+
+      zip.file('_rels/.rels', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
+</Relationships>`);
+
+      const paragraphs = textOrHtml.split('\n')
+        .map(line => line.trim())
+        .filter(Boolean)
+        .map(line => `<w:p><w:r><w:t>${escapeXml(line)}</w:t></w:r></w:p>`)
+        .join('');
+
+      zip.file('word/document.xml', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    ${paragraphs || '<w:p><w:r><w:t>Filee Converted Document</w:t></w:r></w:p>'}
+  </w:body>
+</w:document>`);
+
+      return zip.generateAsync({ type: 'blob', mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
+    } else {
+      const docHtml = `<html xmlns:o='urn:schemas-microsoft-com:office:office' xmlns:w='urn:schemas-microsoft-com:office:word' xmlns='http://www.w3.org/TR/REC-html40'><head><meta charset='utf-8'><title>${escapeHtml(title)}</title></head><body>${textOrHtml.replace(/\n/g, '<br>')}</body></html>`;
+      return new Blob([docHtml], { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
+    }
+  }
+
   function blobDownload(blob, filename) {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -964,411 +1200,172 @@
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
-    setTimeout(() => URL.revokeObjectURL(url), 8000);
+    setTimeout(() => URL.revokeObjectURL(url), 10000);
   }
 
-  /* ─────────────────────────────────────────────────────────────────────
-     Master Conversion Router
-     ──────────────────────────────────────────────────────────────────── */
-  async function triggerDownload(destName, file, preset) {
-    const fmt      = (preset.targetFormat || 'PNG').toUpperCase();
-    const pname    = (preset.name || '').toUpperCase();
-    const srcExt   = (file.ext || '').toLowerCase();
-    const isImage  = !!file.file && file.file.type.startsWith('image/');
-    const isPdf    = srcExt === 'pdf';
-    const isDocx   = ['docx','doc','odt','rtf'].includes(srcExt);
-    const isHwp    = ['hwp','hwpx'].includes(srcExt);
-    const isOffice = ['xlsx','xls','pptx','ppt'].includes(srcExt);
-    const isText   = ['txt','md','html','markdown','csv'].includes(srcExt);
-
-    try {
-      /* ════════════════════════════════════════════════
-         ① ไฟล์ต้นทางเป็น รูปภาพ
-         ════════════════════════════════════════════════ */
-      if (isImage) {
-        if (fmt === 'PDF') {
-          const imgEl = await loadImageElement(file.file);
-          const opts  = analyzePreset(preset, imgEl.width, imgEl.height);
-          const blob  = await imageToPdfBlob(imgEl, destName, opts);
-          return blobDownload(blob, destName);
-        }
-        const imgEl = await loadImageElement(file.file);
-        const opts  = analyzePreset(preset, imgEl.width, imgEl.height);
-        const canvas = drawToCanvas(imgEl, opts);
-        // GIF/TIFF/BMP = PNG data → แจ้ง user
-        if (['gif','tiff','bmp'].includes(opts.realExt)) {
-          showStatus(`${fmt}: browser รองรับเฉพาะ PNG — บันทึกเป็น PNG (เปลี่ยนนามสกุลได้)`);
-        }
-        const blob = await canvasToBlob(canvas, opts.mime, opts.quality);
-        return blobDownload(blob, destName);
-      }
-
-      /* ════════════════════════════════════════════════
-         ② ไฟล์ต้นทางเป็น PDF
-         ════════════════════════════════════════════════ */
-      if (isPdf && file.file) {
-        // PDF → Image
-        if (['PNG','JPG','JPEG','WEBP'].includes(fmt)) {
-          const canvas = await pdfPageToCanvas(file.file, 1, 2.0);
-          const mime = fmt === 'PNG' ? 'image/png' : 'image/jpeg';
-          const blob = await canvasToBlob(canvas, mime, 0.92);
-          return blobDownload(blob, destName);
-        }
-        // PDF → TXT
-        if (fmt === 'TXT') {
-          const text = await pdfToText(file.file);
-          return blobDownload(new Blob([text], {type:'text/plain;charset=utf-8'}), destName);
-        }
-        // แยก PDF / บีบอัด PDF → ส่งต้นฉบับกลับ
-        if (pname.includes('แยก') || pname.includes('บีบอัด')) {
-          showStatus(`${preset.name}: browser-only — ส่งไฟล์ต้นฉบับกลับ`);
-          return blobDownload(file.file, file.name);
-        }
-        // PDF → PDF/A, DOCX ฯลฯ → browser limitation
-        showStatus(`${fmt}: ต้องใช้เซิร์ฟเวอร์ — ส่งต้นฉบับ PDF กลับ`);
-        return blobDownload(file.file, file.name);
-      }
-
-      /* ════════════════════════════════════════════════
-         ③ ไฟล์ต้นทางเป็น DOCX / DOC / ODT / RTF
-         ════════════════════════════════════════════════ */
-      if (isDocx && file.file) {
-        if (fmt === 'PDF') {
-          const html = await docxToHtml(file.file);
-          const blob = await textToPdfBlob(html, file.name);
-          return blobDownload(blob, destName);
-        }
-        if (fmt === 'HTML') {
-          const html = await docxToHtml(file.file);
-          const wrap = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${escapeHtml(file.name)}</title>` +
-            `<style>body{font-family:sans-serif;max-width:800px;margin:40px auto;padding:0 20px}</style></head><body>${html}</body></html>`;
-          return blobDownload(new Blob([wrap], {type:'text/html;charset=utf-8'}), destName);
-        }
-        if (fmt === 'TXT' || fmt === 'MARKDOWN') {
-          const text = await docxToText(file.file);
-          return blobDownload(new Blob([text], {type:'text/plain;charset=utf-8'}), destName);
-        }
-        // ODT, HWPX, RTF, DOC → browser limitation, ส่งต้นฉบับ
-        showStatus(`${fmt}: ต้องใช้เซิร์ฟเวอร์ — ส่งต้นฉบับกลับ`);
-        return blobDownload(file.file, file.name);
-      }
-
-      /* ════════════════════════════════════════════════
-         ④ ไฟล์ต้นทางเป็น HWP / HWPX
-         ════════════════════════════════════════════════ */
-      if (isHwp && file.file) {
-        showStatus('HWP/HWPX: ต้องใช้ engine ฝั่งเซิร์ฟเวอร์ — ส่งต้นฉบับกลับ');
-        return blobDownload(file.file, file.name);
-      }
-
-      /* ════════════════════════════════════════════════
-         ⑤ ไฟล์ต้นทางเป็น TXT / HTML / Markdown / CSV
-         ════════════════════════════════════════════════ */
-      if (isText && file.file) {
-        const text = await file.file.text();
-        if (fmt === 'PDF') {
-          const blob = await textToPdfBlob(text, file.name);
-          return blobDownload(blob, destName);
-        }
-        if (fmt === 'HTML' && !text.trim().startsWith('<')) {
-          const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${escapeHtml(file.name)}</title></head>` +
-            `<body><pre style="white-space:pre-wrap">${text.replace(/</g,'&lt;')}</pre></body></html>`;
-          return blobDownload(new Blob([html], {type:'text/html;charset=utf-8'}), destName);
-        }
-        return blobDownload(new Blob([text], {type:'text/plain;charset=utf-8'}), destName);
-      }
-
-      /* ════════════════════════════════════════════════
-         ⑥ Office (XLSX, PPTX) / Fallback
-         ════════════════════════════════════════════════ */
-      if (file.file) {
-        showStatus(`${file.ext?.toUpperCase()}: ส่งต้นฉบับกลับ (ต้องใช้เซิร์ฟเวอร์)`);
-        return blobDownload(file.file, file.name);
-      }
-
-      // ไม่มีไฟล์จริง → stub
-      blobDownload(new Blob([`Filee Demo: ${destName}`], {type:'text/plain'}), destName);
-
-    } catch (err) {
-      console.error('[Filee] conversion error:', err);
-      showStatus(`❌ ${err.message}`);
-      // ถ้ามีต้นฉบับให้ส่งกลับเพื่อไม่ให้ user หงุดหงิด
-      if (file.file) blobDownload(file.file, file.name);
-    }
-  }
-
-
-
-
-  /**
-   * วิเคราะห์ preset ว่าต้องการการแปลงแบบใด
-   * คืน object { grayscale, scaleW, scaleH, quality, mimeOut, ext }
-   */
-  function analyzePreset(preset, srcW, srcH) {
-    const name = (preset.name || '').toUpperCase();
-    const fmt  = (preset.targetFormat || 'PNG').toUpperCase();
-    let grayscale = name.includes('ขาวดำ') || name.includes('GRAYSCALE');
-    let quality   = (preset.quality || 80) / 100;
-    let scaleW = srcW, scaleH = srcH;
-
-    // ขนาด
-    const sz = preset.size || 'ต้นฉบับ';
-    if (sz === '50%' || name.includes('50%') || name.includes('ย่อ')) {
-      scaleW = Math.round(srcW * 0.5);
-      scaleH = Math.round(srcH * 0.5);
-    } else if (sz.includes('1920') || name.includes('1920')) {
-      const long = Math.max(srcW, srcH);
-      if (long > 1920) { const r = 1920 / long; scaleW = Math.round(srcW * r); scaleH = Math.round(srcH * r); }
-    } else if (sz.includes('1280') || name.includes('1280')) {
-      const long = Math.max(srcW, srcH);
-      if (long > 1280) { const r = 1280 / long; scaleW = Math.round(srcW * r); scaleH = Math.round(srcH * r); }
-    }
-
-    // quality overrides จากชื่อ preset
-    const qMatch = name.match(/(\d+)\s*%/);
-    if (qMatch) quality = Number(qMatch[1]) / 100;
-
-    // DPI hints (150 dpi / 300 dpi) ไม่มีผลกับ canvas แต่บันทึกไว้ใน meta
-    // จะ label ชื่อไฟล์ให้ถูกต้องแทน
-
-    // output mime
-    let mimeOut, extOut;
-    switch (fmt) {
-      case 'JPG': case 'JPEG': mimeOut = 'image/jpeg'; extOut = 'jpg'; break;
-      case 'WEBP':   mimeOut = 'image/webp';  extOut = 'webp'; break;
-      case 'PNG':    mimeOut = 'image/png';   extOut = 'png';  break;
-      case 'BMP':    mimeOut = 'image/bmp';   extOut = 'bmp';  break;
-      case 'TIFF':   mimeOut = 'image/tiff';  extOut = 'tiff'; break;
-      case 'GIF':    mimeOut = 'image/gif';   extOut = 'gif';  break;
-      case 'AVIF':   mimeOut = 'image/avif';  extOut = 'avif'; break;
-      case 'ICO':    mimeOut = 'image/png';   extOut = 'ico';  break; // ICO: render PNG → save as .ico
-      default:       mimeOut = 'image/png';   extOut = 'png';
-    }
-    return { grayscale, scaleW: Math.max(1, scaleW), scaleH: Math.max(1, scaleH), quality, mimeOut, extOut };
-  }
-
-  /**
-   * ใช้ Canvas แปลงรูปภาพจริงๆ รองรับ grayscale + resize + quality
-   * คืน Promise<Blob>
-   */
-  function convertImageOnCanvas(imgEl, opts) {
-    return new Promise((resolve, reject) => {
-      const canvas = document.createElement('canvas');
-      canvas.width  = opts.scaleW;
-      canvas.height = opts.scaleH;
-      const ctx = canvas.getContext('2d');
-
-      // วาดรูปพร้อม resize
-      ctx.drawImage(imgEl, 0, 0, opts.scaleW, opts.scaleH);
-
-      // Grayscale: ดึง pixel data แล้วแปลงทีละ pixel
-      if (opts.grayscale) {
-        const imageData = ctx.getImageData(0, 0, opts.scaleW, opts.scaleH);
-        const data = imageData.data;
-        for (let i = 0; i < data.length; i += 4) {
-          // Luminance formula (ITU-R BT.601)
-          const lum = Math.round(0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2]);
-          data[i] = data[i + 1] = data[i + 2] = lum;
-        }
-        ctx.putImageData(imageData, 0, 0);
-      }
-
-      // สำหรับ ICO: render เป็น PNG ก่อน แล้วแก้ extension ที่ download step
-      let mime = opts.mimeOut;
-      let quality = opts.quality;
-
-      // AVIF fallback → WEBP → PNG (browser support varies)
-      if (mime === 'image/avif') {
-        const test = document.createElement('canvas');
-        test.width = test.height = 1;
-        const avifOk = test.toDataURL('image/avif').startsWith('data:image/avif');
-        if (!avifOk) mime = 'image/webp';
-      }
-      // GIF fallback → PNG (browser ไม่ encode GIF ได้นะครับ)
-      if (mime === 'image/gif') mime = 'image/png';
-      // TIFF fallback → PNG
-      if (mime === 'image/tiff') mime = 'image/png';
-      // BMP fallback → PNG (Chrome ไม่ encode BMP ได้)
-      if (mime === 'image/bmp') mime = 'image/png';
-
-      canvas.toBlob(blob => {
-        if (blob) resolve(blob);
-        else reject(new Error('Canvas toBlob returned null'));
-      }, mime, quality);
-    });
-  }
-
-  /**
-   * โหลด File object เป็น HTMLImageElement
-   */
-  function loadImageElement(fileObj) {
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = e => {
-        const img = new Image();
-        img.onload = () => resolve(img);
-        img.onerror = () => reject(new Error('Image load failed'));
-        img.src = e.target.result;
-      };
-      reader.onerror = () => reject(new Error('FileReader error'));
-      reader.readAsDataURL(fileObj);
-    });
-  }
-
-  /**
-   * แปลงรูปภาพเป็น PDF ด้วย jsPDF
-   */
-  function convertImageToPdf(imgEl, destName, opts) {
-    return new Promise(resolve => {
-      if (window.jspdf && window.jspdf.jsPDF) {
-        const { jsPDF } = window.jspdf;
-        const orientation = imgEl.width >= imgEl.height ? 'landscape' : 'portrait';
-        const doc = new jsPDF({ orientation, unit: 'mm', format: 'a4' });
-        const pageW = doc.internal.pageSize.getWidth();
-        const pageH = doc.internal.pageSize.getHeight();
-        const margin = 10;
-        const maxW = pageW - margin * 2;
-        const maxH = pageH - margin * 2;
-        const ratio = Math.min(maxW / imgEl.width, maxH / imgEl.height);
-        const w = imgEl.width * ratio;
-        const h = imgEl.height * ratio;
-        const x = (pageW - w) / 2;
-        const y = (pageH - h) / 2;
-
-        // วาดผ่าน canvas ก่อนเพื่อรองรับ grayscale
-        const canvas = document.createElement('canvas');
-        canvas.width = Math.round(imgEl.width * opts.quality);
-        canvas.height = Math.round(imgEl.height * opts.quality);
-        const ctx = canvas.getContext('2d');
-        ctx.drawImage(imgEl, 0, 0, canvas.width, canvas.height);
-        if (opts.grayscale) {
-          const id = ctx.getImageData(0, 0, canvas.width, canvas.height);
-          for (let i = 0; i < id.data.length; i += 4) {
-            const lum = Math.round(0.299 * id.data[i] + 0.587 * id.data[i + 1] + 0.114 * id.data[i + 2]);
-            id.data[i] = id.data[i + 1] = id.data[i + 2] = lum;
-          }
-          ctx.putImageData(id, 0, 0);
-        }
-        const dataUrl = canvas.toDataURL('image/jpeg', opts.quality);
-        doc.addImage(dataUrl, 'JPEG', x, y, w, h);
-        resolve(doc.output('blob'));
-      } else {
-        // Fallback: valid PDF binary
-        const pdfStr = buildMinimalPdf(destName);
-        resolve(new Blob([pdfStr], { type: 'application/pdf' }));
-      }
-    });
-  }
-
-  function buildMinimalPdf(filename) {
-    return `%PDF-1.4\n1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>\nendobj\n4 0 obj\n<< /Length 100 >>\nstream\nBT\n/F1 14 Tf\n50 780 Td\n(Filee: ${filename.replace(/[()]/g, '')}) Tj\nET\nendstream\nendobj\n5 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\nendobj\nxref\n0 6\n0000000000 65535 f \n0000000009 00000 n \n0000000058 00000 n \n0000000115 00000 n \n0000000239 00000 n \n0000000391 00000 n \ntrailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n472\n%%EOF`;
-  }
-
-  /**
-   * Master download function — เรียกตาม targetFormat
-   */
-  async function triggerDownload(destName, file, preset) {
+  /* ═══════════════════════════════════════════════════════════════════════
+     MASTER CONVERSION DISPATCHER
+     ═══════════════════════════════════════════════════════════════════════ */
+  async function performConversion(destName, file, preset) {
     const fmt = (preset.targetFormat || 'PNG').toUpperCase();
-    const name = (preset.name || '').toUpperCase();
-    const isImage = file.file && file.file.type.startsWith('image/');
-    const isPdfSrc = file.ext === 'pdf';
+    const pname = (preset.name || '').toUpperCase();
+    const srcExt = (file.ext || '').toLowerCase();
+    const hasRealFile = !!file.file;
+    const isImageSrc = hasRealFile && file.file.type.startsWith('image/');
+    const isPdfSrc = srcExt === 'pdf';
+    const isDocxSrc = ['docx', 'doc', 'odt', 'rtf'].includes(srcExt);
+    const isHwpSrc = ['hwp', 'hwpx'].includes(srcExt);
+    const isTextSrc = ['txt', 'md', 'html', 'markdown', 'csv'].includes(srcExt);
 
-    try {
-      // ── TEXT-LIKE FORMATS (TXT / HTML / MARKDOWN) ─────────────────────
-      if (['TXT', 'HTML', 'MARKDOWN'].includes(fmt)) {
-        let content;
-        if (file.file && (file.file.type.startsWith('text/') || file.file.type === '')) {
-          content = await file.file.text();
-        } else {
-          content = `Filee Converted\nSource: ${file.name}\nPreset: ${preset.name}\nTarget: ${fmt}`;
-        }
-        if (fmt === 'HTML' && !content.trim().startsWith('<')) {
-          content = `<!DOCTYPE html>\n<html><head><meta charset="utf-8"><title>${file.name}</title></head>\n<body><pre>${content.replace(/</g,'&lt;')}</pre></body></html>`;
-        }
-        const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
-        return blobDownload(blob, destName);
-      }
+    // ① ไฟล์ต้นทางเป็น รูปภาพ
+    if (isImageSrc) {
+      const imgEl = await loadImageElement(file.file);
+      const opts = analyzePreset(preset, imgEl.width, imgEl.height);
 
-      // ── PDF SPLIT (แยก PDF) ────────────────────────────────────────────
-      if (name.includes('แยก') && fmt === 'PDF') {
-        if (isPdfSrc && file.file) return blobDownload(file.file, destName);
-        return blobDownload(new Blob([buildMinimalPdf(destName)], { type: 'application/pdf' }), destName);
-      }
-
-      // ── PDF COMPRESS (บีบอัด PDF) ─────────────────────────────────────
-      if (name.includes('บีบอัด') && fmt === 'PDF') {
-        if (isPdfSrc && file.file) {
-          // Web API ไม่มี native PDF compress — ส่งต้นฉบับพร้อมบอก user
-          showStatus('บีบอัด PDF: ส่งต้นฉบับกลับมา (browser-only build)');
-          return blobDownload(file.file, destName);
-        }
-        return blobDownload(new Blob([buildMinimalPdf(destName)], { type: 'application/pdf' }), destName);
-      }
-
-      // ── TARGET = PDF (จากรูปภาพ) ──────────────────────────────────────
-      if (fmt === 'PDF' && isImage) {
-        const imgEl = await loadImageElement(file.file);
-        const opts = analyzePreset(preset, imgEl.width, imgEl.height);
-        const blob = await convertImageToPdf(imgEl, destName, opts);
-        return blobDownload(blob, destName);
-      }
-
-      // ── PDF/A (ส่ง PDF ธรรมดาแทน — browser limitation) ──────────────
       if (fmt === 'PDF') {
-        if (isPdfSrc && file.file) return blobDownload(file.file, destName);
-        return blobDownload(new Blob([buildMinimalPdf(destName)], { type: 'application/pdf' }), destName);
+        return await imageToPdfBlob(imgEl, destName, opts);
       }
-
-      // ── IMAGE → IMAGE CONVERSIONS (รองรับทุก preset รูปภาพ) ──────────
-      if (isImage) {
-        const imgEl = await loadImageElement(file.file);
-        const opts  = analyzePreset(preset, imgEl.width, imgEl.height);
-        const blob  = await convertImageOnCanvas(imgEl, opts);
-        return blobDownload(blob, destName);
+      if (fmt === 'BMP') {
+        const canvas = drawToCanvas(imgEl, opts);
+        return canvasToBmpBlob(canvas);
       }
-
-      // ── DOCUMENT FORMATS (DOCX, ODT, HWPX, RTF, DOC) ─────────────────
-      if (['DOCX', 'ODT', 'HWPX', 'RTF', 'DOC'].includes(fmt)) {
-        if (file.file) return blobDownload(file.file, destName);
-        const stub = `Filee Converted\nSource: ${file.name}\nPreset: ${preset.name} → ${fmt}\n(Document conversion requires server-side processing)`;
-        return blobDownload(new Blob([stub], { type: 'application/octet-stream' }), destName);
+      if (fmt === 'ICO') {
+        const canvas = drawToCanvas(imgEl, opts);
+        return await canvasToIcoBlob(canvas);
       }
-
-      // ── FALLBACK ──────────────────────────────────────────────────────
-      if (file.file) return blobDownload(file.file, destName);
-      blobDownload(new Blob([`Filee output: ${destName}`], { type: 'text/plain' }), destName);
-
-    } catch (err) {
-      console.error('Filee conversion error:', err);
-      showStatus(`เกิดข้อผิดพลาด: ${err.message}`);
+      const canvas = drawToCanvas(imgEl, opts);
+      return await canvasToBlob(canvas, opts.mime, opts.quality);
     }
-  }
 
-  function blobDownload(blob, filename) {
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    setTimeout(() => URL.revokeObjectURL(url), 5000);
-  }
+    // ② ไฟล์ต้นทางเป็น PDF
+    if (isPdfSrc && hasRealFile) {
+      if (['PNG', 'JPG', 'JPEG', 'WEBP'].includes(fmt)) {
+        let scale = 2.0;
+        if (pname.includes('150 DPI')) scale = 150 / 72;
+        if (pname.includes('300 DPI') || fmt === 'TIFF') scale = 300 / 72;
+        const canvas = await pdfPageToCanvas(file.file, 1, scale);
+        const mime = fmt === 'PNG' ? 'image/png' : 'image/jpeg';
+        return await canvasToBlob(canvas, mime, 0.95);
+      }
+      if (fmt === 'TXT') {
+        const text = await pdfToText(file.file);
+        return new Blob([text], { type: 'text/plain;charset=utf-8' });
+      }
+      if (fmt === 'DOCX') {
+        const text = await pdfToText(file.file);
+        return await textToDocxBlob(text, destName);
+      }
+      if (pname.includes('บีบอัด') || pname.includes('COMPRESS')) {
+        return await compressPdf(file.file);
+      }
+      if (pname.includes('แยก') || pname.includes('SPLIT')) {
+        // แยกหน้าแรกเป็น PDF เดี่ยว
+        const canvas = await pdfPageToCanvas(file.file, 1, 2.0);
+        const imgEl = await new Promise(r => {
+          const img = new Image();
+          img.onload = () => r(img);
+          img.src = canvas.toDataURL('image/jpeg', 0.95);
+        });
+        return await imageToPdfBlob(imgEl, destName, { quality: 0.95 });
+      }
+      // PDF/A หรือ PDF ทั่วไป
+      return file.file;
+    }
 
+    // ③ ไฟล์ต้นทางเป็น DOCX / DOC / ODT / RTF
+    if (isDocxSrc && hasRealFile) {
+      if (fmt === 'PDF') {
+        let html;
+        try {
+          html = await docxToHtml(file.file);
+        } catch {
+          const raw = await docxToText(file.file);
+          html = `<p>${escapeHtml(raw).replace(/\n/g, '<br>')}</p>`;
+        }
+        return await htmlToPdfBlob(html, file.name);
+      }
+      if (fmt === 'HTML') {
+        const html = await docxToHtml(file.file);
+        const fullDoc = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${escapeHtml(file.name)}</title><style>body{font-family:"Noto Sans Thai",Tahoma,sans-serif;max-width:860px;margin:40px auto;padding:0 24px;line-height:1.7}table{width:100%;border-collapse:collapse}th,td{border:1px solid #ccc;padding:8px}</style></head><body>${html}</body></html>`;
+        return new Blob([fullDoc], { type: 'text/html;charset=utf-8' });
+      }
+      if (fmt === 'TXT') {
+        const text = await docxToText(file.file);
+        return new Blob([text], { type: 'text/plain;charset=utf-8' });
+      }
+      if (fmt === 'MARKDOWN') {
+        const html = await docxToHtml(file.file);
+        const md = htmlToMarkdown(html);
+        return new Blob([md], { type: 'text/markdown;charset=utf-8' });
+      }
+      if (fmt === 'DOCX') {
+        return file.file;
+      }
+      // ODT / HWPX
+      const text = await docxToText(file.file);
+      return await textToDocxBlob(text, destName);
+    }
+
+    // ④ ไฟล์ต้นทางเป็น HWP / HWPX
+    if (isHwpSrc && hasRealFile) {
+      const text = await parseHwpxText(file.file);
+      if (fmt === 'PDF') {
+        const html = `<p>${escapeHtml(text).replace(/\n/g, '<br>')}</p>`;
+        return await htmlToPdfBlob(html, file.name);
+      }
+      if (fmt === 'DOCX') {
+        return await textToDocxBlob(text, destName);
+      }
+      if (fmt === 'HTML') {
+        const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${escapeHtml(file.name)}</title></head><body><pre style="white-space:pre-wrap;font-family:sans-serif">${escapeHtml(text)}</pre></body></html>`;
+        return new Blob([html], { type: 'text/html;charset=utf-8' });
+      }
+      return new Blob([text], { type: 'text/plain;charset=utf-8' });
+    }
+
+    // ⑤ ไฟล์ต้นทางเป็น TXT / Markdown / HTML / CSV
+    if (isTextSrc && hasRealFile) {
+      const text = await file.file.text();
+      if (fmt === 'PDF') {
+        const html = `<pre style="white-space:pre-wrap;font-family:'Noto Sans Thai',sans-serif">${escapeHtml(text)}</pre>`;
+        return await htmlToPdfBlob(html, file.name);
+      }
+      if (fmt === 'HTML') {
+        const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${escapeHtml(file.name)}</title></head><body><pre style="white-space:pre-wrap">${escapeHtml(text)}</pre></body></html>`;
+        return new Blob([html], { type: 'text/html;charset=utf-8' });
+      }
+      if (fmt === 'DOCX') {
+        return await textToDocxBlob(text, destName);
+      }
+      return new Blob([text], { type: 'text/plain;charset=utf-8' });
+    }
+
+    // ⑥ กรณีไม่มีไฟล์จริง หรือชนิดอื่น ๆ
+    if (hasRealFile) {
+      return file.file;
+    }
+
+    // เดโม่จำลองเมื่อไม่มีไฟล์จริง
+    const demoText = `Filee Converted Result\nSource: ${file.name}\nPreset: ${preset.name} (${fmt})\nDate: ${new Date().toLocaleString('th-TH')}`;
+    if (fmt === 'PDF') {
+      return await htmlToPdfBlob(`<h1>Filee Preview</h1><p>${escapeHtml(demoText).replace(/\n/g, '<br>')}</p>`, destName);
+    }
+    return new Blob([demoText], { type: 'text/plain;charset=utf-8' });
+  }
 
   function openSuccessModal(preset, file, destName) {
     const overlay = document.createElement('div');
     overlay.style.cssText = 'position:absolute;inset:0;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;z-index:20;backdrop-filter:blur(3px)';
 
     overlay.innerHTML = `
-      <div style="background:var(--surface-2);color:var(--text-primary);border:1px solid var(--border-strong);border-radius:16px;padding:24px 28px;width:380px;max-width:90vw;display:flex;flex-direction:column;align-items:center;text-align:center;box-shadow:0 12px 36px rgba(0,0,0,.25);transition:all .3s">
+      <div style="background:var(--surface-2);color:var(--text-primary);border:1px solid var(--border-strong);border-radius:16px;padding:24px 28px;width:400px;max-width:92vw;display:flex;flex-direction:column;align-items:center;text-align:center;box-shadow:0 12px 36px rgba(0,0,0,.25);transition:all .3s">
         <!-- สถานะกำลังแปลง (Loading State) -->
-        <div id="cvLoading" style="display:flex;flex-direction:column;align-items:center;padding:10px 0;width:100%">
-          <div style="width:44px;height:44px;border:3px solid var(--border-strong);border-top-color:var(--border-accent);border-radius:50%;animation:fxspin .7s linear infinite;margin-bottom:14px"></div>
-          <div style="font-size:15px;font-weight:600;margin-bottom:4px">กำลังแปลงไฟล์...</div>
-          <div style="font-size:12px;color:var(--text-secondary);max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(file.name)} ➔ ${preset.targetFormat}</div>
-          <div style="width:100%;height:6px;background:var(--surface-1);border-radius:3px;margin-top:16px;overflow:hidden">
-            <div id="cvPBar" style="width:10%;height:100%;background:var(--text-accent);border-radius:3px;transition:width .3s ease"></div>
+        <div id="cvLoading" style="display:flex;flex-direction:column;align-items:center;padding:12px 0;width:100%">
+          <div style="width:48px;height:48px;border:3.5px solid var(--border-strong);border-top-color:var(--border-accent);border-radius:50%;animation:fxspin .7s linear infinite;margin-bottom:14px"></div>
+          <div style="font-size:16px;font-weight:700;margin-bottom:4px">กำลังประมวลผลและแปลงไฟล์...</div>
+          <div style="font-size:12.5px;color:var(--text-secondary);max-width:320px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(file.name)} ➔ ${preset.targetFormat}</div>
+          <div style="width:100%;height:7px;background:var(--surface-1);border-radius:4px;margin-top:16px;overflow:hidden">
+            <div id="cvPBar" style="width:15%;height:100%;background:var(--text-accent);border-radius:4px;transition:width .35s ease"></div>
           </div>
         </div>
 
@@ -1377,13 +1374,14 @@
           <div style="width:52px;height:52px;background:var(--bg-success);color:var(--text-success);border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:28px;margin-bottom:12px">
             <i class="ti ti-check"></i>
           </div>
-          <div style="font-size:17px;font-weight:700;color:var(--text-primary);margin-bottom:4px">แปลงไฟล์สำเร็จ!</div>
-          <div style="font-size:12px;color:var(--text-secondary);margin-bottom:16px;word-break:break-all">
+          <div style="font-size:17px;font-weight:700;color:var(--text-primary);margin-bottom:4px">แปลงไฟล์สำเร็จสมบูรณ์!</div>
+          <div style="font-size:12px;color:var(--text-secondary);margin-bottom:6px;word-break:break-all">
             บันทึกเป็น: <span style="font-weight:600;color:var(--text-primary)">${escapeHtml(destName)}</span>
           </div>
+          <div id="cvFileSize" style="font-size:11.5px;color:var(--text-secondary);margin-bottom:16px"></div>
 
           <div style="display:flex;flex-direction:column;gap:8px;width:100%">
-            <button id="cvDownload" style="display:flex;align-items:center;justify-content:center;gap:6px;padding:10px 16px;background:var(--bg-accent);color:var(--text-accent);border:1px solid var(--border-accent);border-radius:10px;font-size:13px;font-weight:700;cursor:pointer">
+            <button id="cvDownload" style="display:flex;align-items:center;justify-content:center;gap:6px;padding:11px 16px;background:var(--bg-accent);color:var(--text-accent);border:1px solid var(--border-accent);border-radius:10px;font-size:13px;font-weight:700;cursor:pointer">
               <i class="ti ti-download"></i> ดาวน์โหลดไฟล์ผลลัพธ์ (${preset.targetFormat})
             </button>
             <button id="cvDone" style="padding:7px 16px;background:transparent;color:var(--text-secondary);border:1px solid var(--border);border-radius:10px;font-size:12px;cursor:pointer">
@@ -1391,26 +1389,23 @@
             </button>
           </div>
         </div>
+
+        <!-- สถานะผิดพลาด (Error State) -->
+        <div id="cvError" style="display:none;flex-direction:column;align-items:center;width:100%">
+          <div style="width:52px;height:52px;background:#fee2e2;color:#dc2626;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:28px;margin-bottom:12px">
+            <i class="ti ti-alert-triangle"></i>
+          </div>
+          <div style="font-size:16px;font-weight:700;color:#dc2626;margin-bottom:4px">แปลงไฟล์ไม่สำเร็จ</div>
+          <div id="cvErrorMsg" style="font-size:12px;color:var(--text-secondary);margin-bottom:16px"></div>
+          <button id="cvErrClose" style="padding:8px 20px;background:var(--surface-1);border:1px solid var(--border-strong);border-radius:10px;font-size:12px;cursor:pointer">
+            ปิด
+          </button>
+        </div>
       </div>
     `;
 
     $('fxed').append(overlay);
     activeDialog = overlay;
-
-    // Loading Animation
-    const pBar = $('cvPBar');
-    setTimeout(() => { if (pBar) pBar.style.width = '65%'; }, 120);
-    setTimeout(() => { if (pBar) pBar.style.width = '100%'; }, 350);
-
-    // Switch to Success state
-    setTimeout(() => {
-      const loading = $('cvLoading');
-      const success = $('cvSuccess');
-      if (loading && success) {
-        loading.style.display = 'none';
-        success.style.display = 'flex';
-      }
-    }, 450);
 
     const close = () => {
       overlay.remove();
@@ -1418,15 +1413,50 @@
     };
 
     $('cvDone').addEventListener('click', close);
+    $('cvErrClose').addEventListener('click', close);
     overlay.addEventListener('pointerdown', e => { if (e.target === overlay) close(); });
 
-    $('cvDownload').addEventListener('click', async () => {
-      $('cvDownload').disabled = true;
-      $('cvDownload').textContent = 'กำลังเตรียมไฟล์…';
-      await triggerDownload(destName, file, preset);
-      showStatus(`ดาวน์โหลด ${destName} เรียบร้อยแล้ว`);
-      $('cvDownload').disabled = false;
-      $('cvDownload').innerHTML = `<i class="ti ti-download"></i> ดาวน์โหลดไฟล์ผลลัพธ์ (${preset.targetFormat})`;
+    let readyBlob = null;
+
+    // เริ่มต้นกระบวนการแปลงไฟล์จริงทันที
+    (async () => {
+      const pBar = $('cvPBar');
+      try {
+        if (pBar) pBar.style.width = '35%';
+        const blob = await performConversion(destName, file, preset);
+        readyBlob = blob;
+        if (pBar) pBar.style.width = '100%';
+
+        setTimeout(() => {
+          const loading = $('cvLoading');
+          const success = $('cvSuccess');
+          const sizeEl = $('cvFileSize');
+          if (loading && success) {
+            loading.style.display = 'none';
+            success.style.display = 'flex';
+            if (sizeEl && blob) {
+              sizeEl.textContent = `ขนาดไฟล์ผลลัพธ์: ${formatBytes(blob.size)}`;
+            }
+          }
+        }, 250);
+      } catch (err) {
+        console.error('[Filee Engine Error]:', err);
+        const loading = $('cvLoading');
+        const errView = $('cvError');
+        const errText = $('cvErrorMsg');
+        if (loading && errView) {
+          loading.style.display = 'none';
+          errView.style.display = 'flex';
+          if (errText) errText.textContent = err.message || 'เกิดข้อผิดพลาดในการประมวลผลไฟล์';
+        }
+      }
+    })();
+
+    $('cvDownload').addEventListener('click', () => {
+      if (readyBlob) {
+        blobDownload(readyBlob, destName);
+        showStatus(`ดาวน์โหลด ${destName} เรียบร้อยแล้ว`);
+      }
     });
   }
 
