@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<!--
+  Filee UI mockup (design reference for contributors).
+  Interactive: switch profiles, drag chips onto the donut / slices back to the palette / slices onto each other,
+  right-click or ✎ a slice for the preset popup, toggle "reduce animations".
+  The real implementation: src/Filee.App/Controls/DonutMenu.cs and Views/Pages/ToolbarPage.axaml.
+-->
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Filee - ตัวอย่างแถบเครื่องมือวงกลม</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3/dist/tabler-icons.min.css">
+<style>
+:root{--surface-0:#F6F5F1;--surface-1:#EFEDE6;--surface-2:#FFFFFF;--text-primary:#1F1E1D;--text-secondary:#6B6A66;--text-muted:#9C9A92;
+--border:rgba(0,0,0,.09);--border-strong:rgba(0,0,0,.18);--bg-accent:#E3E1FA;--text-accent:#3C3489;--border-accent:#7F77DD;
+--bg-success:#DDF3EA;--text-success:#0F6E56;--text-warning:#854F0B;--text-danger:#A32D2D;--radius:10px;
+font-family:"Noto Sans Thai","Leelawadee UI",Tahoma,system-ui,sans-serif}
+@media (prefers-color-scheme:dark){:root{--surface-0:#1B1B19;--surface-1:#232321;--surface-2:#2C2C2A;--text-primary:#F1EFE8;--text-secondary:#B4B2A9;
+--text-muted:#888780;--border:rgba(255,255,255,.1);--border-strong:rgba(255,255,255,.2);--bg-accent:#3C3489;--text-accent:#CECBF6;--border-accent:#AFA9EC;
+--bg-success:#085041;--text-success:#9FE1CB}}
+body{margin:0;padding:24px;background:var(--surface-0);color:var(--text-primary)}
+button,select,input{font:inherit;color:inherit;background:var(--surface-2);border:1px solid var(--border-strong);border-radius:var(--radius);padding:5px 10px}
+button{cursor:pointer}
+.fxA{transform-origin:160px 160px;animation:fxin .55s cubic-bezier(.34,1.56,.64,1) both}
+@keyframes fxin{from{opacity:0;transform:scale(.55) rotate(-25deg)}to{opacity:1;transform:none}}
+@keyframes fxspin{to{transform:rotate(360deg)}}
+.fxS{transition:transform .35s cubic-bezier(.34,1.56,.64,1);cursor:grab;touch-action:none}
+.fxS path{fill:var(--surface-2);stroke:var(--surface-1);stroke-width:2.5;transition:fill .2s}
+.fxS text{fill:var(--text-primary);font-size:12px;font-weight:600;pointer-events:none;user-select:none}
+.fxS.hot path{fill:var(--bg-accent)}.fxS.hot text{fill:var(--text-accent)}
+.fxS.drop path{fill:var(--bg-success)}.fxS.drop text{fill:var(--text-success)}.fxS.dim{opacity:.35}
+#fx.red .fxA{animation:none}#fx.red .fxS,#fx.red .fxS path{transition:none}
+.fxchip{display:inline-flex;align-items:center;gap:4px;padding:4px 10px;margin:3px;border-radius:999px;border:1px solid var(--border-strong);background:var(--surface-2);font-size:12px;cursor:grab;user-select:none;touch-action:none}
+.fxpf{display:block;width:100%;text-align:left;font-size:13px;padding:6px 8px;margin-bottom:4px}
+.fxpf.on{background:var(--bg-accent);color:var(--text-accent);border-color:var(--border-accent)}
+.fxf{display:flex;flex-direction:column;gap:3px;font-size:12px;color:var(--text-secondary)}
+</style>
+</head>
+<body>
+<div id="fx" style="position:relative;max-width:760px;margin:0 auto">
+<div style="border:1px solid var(--border);border-radius:14px;overflow:hidden;background:var(--surface-2)">
+  <div style="display:flex;align-items:center;gap:8px;padding:8px 12px;border-bottom:1px solid var(--border);background:var(--surface-1);flex-wrap:wrap">
+    <i class="ti ti-circle-dashed"></i><span style="font-size:13px;font-weight:600">Filee ตั้งค่า · แถบเครื่องมือวงกลม</span>
+    <span style="margin-left:auto;display:flex;gap:8px;align-items:center">
+      <label style="font-size:12px;color:var(--text-secondary)"><input type="checkbox" id="fxred"> ลดภาพเคลื่อนไหว</label>
+    </span>
+  </div>
+  <div id="fxed" style="position:relative;display:grid;grid-template-columns:130px 320px minmax(0,1fr);gap:14px;padding:14px;min-height:440px;background:var(--surface-1)">
+    <div>
+      <p style="font-size:12px;color:var(--text-secondary);margin:0 0 6px">1. เลือกโปรไฟล์</p>
+      <div id="fxprof"></div>
+      <button id="fxadd" class="fxpf" style="border-style:dashed;color:var(--text-secondary)"><i class="ti ti-plus"></i> เพิ่มโปรไฟล์</button>
+    </div>
+    <div>
+      <p style="font-size:12px;color:var(--text-secondary);margin:0 0 6px">2. จัดวางพรีเซ็ต (รูปแบบเดียวกับแถบเครื่องมือจริง)</p>
+      <div id="fxw" style="position:relative;width:320px;height:320px;user-select:none">
+        <svg id="fxsvg" width="320" height="320" viewBox="0 0 320 320" style="overflow:visible"></svg>
+        <button id="fxpen" aria-label="แก้ไขพรีเซ็ต" style="position:absolute;width:28px;height:28px;padding:0;border-radius:50%;visibility:hidden;display:flex;align-items:center;justify-content:center;z-index:3"><i class="ti ti-pencil" style="font-size:15px"></i></button>
+        <div id="fxcenter" style="position:absolute;top:98px;left:98px;width:124px;height:124px;border-radius:50%;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;cursor:pointer;padding:8px;box-sizing:border-box;z-index:2;background:var(--surface-1);border:1.5px dashed var(--border-strong);transition:all .2s" title="คลิกเพื่อเลือกไฟล์ หรือลากไฟล์จากเครื่องมาวางตรงนี้">
+          <i id="fxc-icon" class="ti ti-file-upload" style="font-size:22px;color:var(--text-secondary);margin-bottom:2px"></i>
+          <span id="fxc-name" style="font-size:11px;font-weight:600;max-width:105px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;line-height:1.2">รูปภาพ</span>
+          <span id="fxc-desc" style="font-size:9.5px;color:var(--text-secondary);margin-top:2px">ลากไฟล์มาวางที่นี่</span>
+        </div>
+        <input type="file" id="fxfileinput" style="display:none">
+      </div>
+      <div style="display:flex;align-items:center;justify-content:center;gap:10px;margin-top:8px">
+        <button id="fxrot-left" title="หมุนทวนเข็มนาฬิกา" style="font-size:11px;padding:3px 8px"><i class="ti ti-rotate-2"></i> หมุนซ้าย</button>
+        <span style="font-size:11px;color:var(--text-secondary);display:inline-flex;align-items:center;gap:4px"><i class="ti ti-mouse"></i> เลื่อนล้อเมาส์เพื่อหมุน</span>
+        <button id="fxrot-right" title="หมุนตามเข็มนาฬิกา" style="font-size:11px;padding:3px 8px">หมุนขวา <i class="ti ti-rotate-clockwise-2"></i></button>
+      </div>
+      <p id="fxext" style="font-size:12px;color:var(--text-secondary);margin:6px 0 0"></p>
+      <p id="fxmsg" style="font-size:12px;color:var(--text-warning);margin:2px 0 0;min-height:16px"></p>
+    </div>
+    <div>
+      <p style="font-size:12px;color:var(--text-secondary);margin:0 0 6px">พรีเซ็ตที่ใช้ได้</p>
+      <div id="fxpal" style="min-height:120px;padding:4px;border-radius:var(--radius);border:1px dashed var(--border-strong);background:var(--surface-2)"></div>
+      <div style="font-size:12px;color:var(--text-secondary);line-height:1.7;margin-top:10px">
+        <div><i class="ti ti-drag-drop"></i> ลากรายการไปที่วงแหวนเพื่อเพิ่ม</div>
+        <div><i class="ti ti-arrow-back-up"></i> ลากส่วนบนวงแหวนมาที่นี่เพื่อนำออก</div>
+        <div><i class="ti ti-arrows-sort"></i> ลากสลับตำแหน่งเพื่อจัดลำดับ</div>
+        <div><i class="ti ti-pencil"></i> คลิกขวาหรือกดดินสอเพื่อแก้ไขพรีเซ็ต</div>
+      </div>
+    </div>
+  </div>
+</div>
+<div id="fxgh" style="position:absolute;pointer-events:none;visibility:hidden;z-index:9" class="fxchip"></div>
+</div>
+<script type="text/plain" id="mockup-script">
+const P={image:{name:'รูปภาพ',ext:'jpg, jpeg, png, bmp, tiff, webp, gif, heic',on:['PNG','WEBP','PDF','TIFF','BMP','ICO','JPG 70%','ย่อ 50%'],off:['GIF','AVIF','PNG ขาวดำ','TIFF 300 dpi']},pdf:{name:'PDF',ext:'pdf',on:['PNG','JPG','DOCX','HWPX','TXT','แยก PDF','บีบอัด PDF'],off:['TIFF','PDF/A','JPG 150 dpi']},doc:{name:'เอกสารสำนักงาน',ext:'docx, doc, odt, rtf, xlsx, pptx',on:['PDF','ODT','HWPX','TXT','HTML'],off:['RTF','DOC','PDF/A']},hwp:{name:'HWP/HWPX',ext:'hwp, hwpx',on:['PDF','DOCX','PNG','TXT','HWPX'],off:['ODT','HTML','Markdown']}};
+const DET={},FM=['PNG','JPG','WEBP','TIFF','BMP','ICO','GIF','AVIF','PDF','DOCX','ODT','HWPX','TXT','HTML','RTF','DOC','MARKDOWN'];
+let cur='image',hov=-1,pd=null,nid=0;
+const NS='http://www.w3.org/2000/svg',C=160,R2=152,R1=62,$=i=>document.getElementById(i);
+const svg=$('fxsvg'),pen=$('fxpen'),pal=$('fxpal'),gh=$('fxgh'),root=$('fx'),wrap=$('fxw');
+const pt=(r,a)=>[C+r*Math.cos(a),C+r*Math.sin(a)];
+function seg(i,n){if(n===1)return `M${C-R2} ${C}A${R2} ${R2} 0 1 0 ${C+R2} ${C}A${R2} ${R2} 0 1 0 ${C-R2} ${C}M${C-R1} ${C}A${R1} ${R1} 0 1 1 ${C+R1} ${C}A${R1} ${R1} 0 1 1 ${C-R1} ${C}Z`;const sp=2*Math.PI/n,s=-Math.PI/2+i*sp-sp/2,e=s+sp,[a,b]=pt(R2,s),[c,d]=pt(R2,e),[f,g]=pt(R1,e),[h,k]=pt(R1,s);return `M${a} ${b}A${R2} ${R2} 0 0 1 ${c} ${d}L${f} ${g}A${R1} ${R1} 0 0 0 ${h} ${k}Z`}
+function el(t,a){const e=document.createElementNS(NS,t);for(const k in a)e.setAttribute(k,a[k]);return e}
+function render(anim){const p=P[cur],n=p.on.length;svg.innerHTML='';
+if(!n)svg.append(el('circle',{cx:C,cy:C,r:(R1+R2)/2,fill:'none','stroke-width':R2-R1,style:'stroke:var(--surface-2)'}));
+p.on.forEach((t,i)=>{const A=el('g',{class:'fxA'});A.style.animationDelay=(i*30)+'ms';if(!anim)A.style.animation='none';const S=el('g',{class:'fxS','data-seg':i});const pa=el('path',{d:seg(i,n)});if(n===1)pa.setAttribute('fill-rule','evenodd');const m=-Math.PI/2+i*2*Math.PI/n,[x,y]=n===1?[C,C-(R1+R2)/2]:pt(102,m);const tx=el('text',{x,y,'text-anchor':'middle','dominant-baseline':'central'});tx.textContent=t;S.append(pa,tx);A.append(S);svg.append(A);
+S.addEventListener('pointerenter',()=>setHov(i));S.addEventListener('pointerdown',e=>{if(e.button)return;e.preventDefault();pd={from:'on',idx:i,val:t,x:e.clientX,y:e.clientY,act:false}});S.addEventListener('contextmenu',e=>{e.preventDefault();openPop(i)})});
+const t1=el('text',{x:C,y:C-8,'text-anchor':'middle',style:'fill:var(--text-primary);font-size:14px;font-weight:600'});t1.textContent=p.name;const t2=el('text',{x:C,y:C+14,'text-anchor':'middle',style:'fill:var(--text-secondary);font-size:12px'});t2.textContent=n?n+' / 12':'ลากมาวางที่นี่';svg.append(t1,t2);
+$('fxext').textContent='นามสกุลไฟล์ที่รองรับ: '+p.ext;
+$('fxprof').innerHTML='';Object.keys(P).forEach(k=>{const b=document.createElement('button');b.className='fxpf'+(k===cur?' on':'');b.textContent=P[k].name;b.onclick=()=>{cur=k;render(true)};$('fxprof').append(b)});
+pal.innerHTML='';p.off.forEach((t,i)=>{const c=document.createElement('span');c.className='fxchip';c.innerHTML='<i class="ti ti-grip-vertical"></i>'+t;c.onpointerdown=e=>{if(e.button)return;e.preventDefault();pd={from:'off',idx:i,val:t,x:e.clientX,y:e.clientY,act:false}};pal.append(c)});
+hov=-1;pen.style.visibility='hidden'}
+function clearHot(){svg.querySelectorAll('.fxS').forEach(s=>{s.classList.remove('hot');s.style.transform=''})}
+function setHov(i){if(pd&&pd.act)return;hov=i;const n=P[cur].on.length;clearHot();const s=svg.querySelector(`[data-seg="${i}"]`);s.classList.add('hot');const m=-Math.PI/2+i*2*Math.PI/n;if(n>1)s.style.transform=`translate(${Math.cos(m)*6}px,${Math.sin(m)*6}px)`;const [x,y]=n===1?[C,C-138]:pt(140,m);pen.style.left=(x-14)+'px';pen.style.top=(y-14)+'px';pen.style.visibility='visible'}
+wrap.addEventListener('pointerleave',()=>{if(pd&&pd.act)return;hov=-1;clearHot();pen.style.visibility='hidden'});
+pen.addEventListener('pointerdown',e=>e.stopPropagation());pen.onclick=()=>openPop(hov);
+function flash(t){$('fxmsg').textContent=t;setTimeout(()=>$('fxmsg').textContent='',1600)}
+document.addEventListener('pointermove',e=>{if(!pd)return;if(!pd.act&&Math.hypot(e.clientX-pd.x,e.clientY-pd.y)>5){pd.act=true;gh.textContent=pd.val;gh.style.visibility='visible';pen.style.visibility='hidden';clearHot();if(pd.from==='on')svg.querySelector(`[data-seg="${pd.idx}"]`).classList.add('dim')}if(!pd.act)return;const r=root.getBoundingClientRect();gh.style.left=(e.clientX-r.left+10)+'px';gh.style.top=(e.clientY-r.top+10)+'px';svg.querySelectorAll('.fxS').forEach(s=>s.classList.remove('drop'));const t=document.elementFromPoint(e.clientX,e.clientY),g=t&&t.closest('[data-seg]');if(g)g.classList.add('drop');pal.style.borderColor=(t&&t.closest('#fxpal')&&pd.from==='on')?'var(--border-accent)':''});
+document.addEventListener('pointerup',e=>{if(!pd)return;const d=pd;pd=null;gh.style.visibility='hidden';pal.style.borderColor='';if(!d.act)return;const t=document.elementFromPoint(e.clientX,e.clientY),g=t&&t.closest('[data-seg]'),inPal=t&&t.closest('#fxpal'),inD=t&&t.closest('#fxw'),p=P[cur];
+if(d.from==='on'){if(inPal){p.on.splice(d.idx,1);p.off.push(d.val)}else if(g){const ti=+g.dataset.seg;p.on.splice(d.idx,1);p.on.splice(ti,0,d.val)}}
+else if(g||inD){if(p.on.length>=12)flash('เพิ่มได้สูงสุด 12 รายการ');else{p.off.splice(d.idx,1);p.on.splice(g?+g.dataset.seg:p.on.length,0,d.val)}}
+render(false)});
+function openPop(i){if(i<0)return;const p=P[cur],nm=p.on[i],u=nm.toUpperCase(),d=DET[nm]||{fmt:FM.find(f=>u.includes(f))||'PNG',q:80,size:'ต้นฉบับ',loc:'โฟลเดอร์ต้นฉบับ',pat:'{name}_{preset}',cf:'เพิ่มหมายเลข',exif:true};
+const sel=(id,arr,v)=>`<select id="${id}" style="font-size:12px;width:100%">${arr.map(o=>`<option${o===v?' selected':''}>${o}</option>`).join('')}</select>`;
+const ov=document.createElement('div');ov.style.cssText='position:absolute;inset:0;background:rgba(0,0,0,.35);display:flex;align-items:center;justify-content:center;z-index:5';
+ov.innerHTML=`<div style="background:var(--surface-2);border:1px solid var(--border);border-radius:14px;padding:14px 16px;width:380px;font-size:13px">
+<div style="display:flex;align-items:center;gap:6px;font-weight:600;margin-bottom:10px"><i class="ti ti-pencil"></i>แก้ไขพรีเซ็ต<span style="margin-left:auto;font-size:11px;font-weight:400;color:var(--text-muted)">เครื่องมือแก้ไขแบบเดียวกับหน้าพรีเซ็ต</span></div>
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+<label class="fxf" style="grid-column:1/3">ชื่อ<input id="fpN" value="${nm}" style="width:100%;box-sizing:border-box"><span id="fpE" style="font-size:12px;color:var(--text-danger)"></span></label>
+<label class="fxf">รูปแบบไฟล์ปลายทาง${sel('fpF',FM,d.fmt)}</label>
+<label class="fxf">ขนาด${sel('fpZ',['ต้นฉบับ','50%','ด้านยาว 1920 พิกเซล','ด้านยาว 1280 พิกเซล'],d.size)}</label>
+<label class="fxf" style="grid-column:1/3">คุณภาพ <span style="display:flex;gap:8px;align-items:center"><input type="range" id="fpQ" min="10" max="100" step="1" value="${d.q}" style="flex:1"><span id="fpQo" style="min-width:28px;color:var(--text-primary)">${d.q}</span></span></label>
+<label class="fxf">ตำแหน่งบันทึก${sel('fpL',['โฟลเดอร์ต้นฉบับ','โฟลเดอร์ย่อย (แปลงแล้ว)','เลือกโฟลเดอร์…'],d.loc)}</label>
+<label class="fxf">เมื่อชื่อไฟล์ซ้ำ${sel('fpC2',['เพิ่มหมายเลข','เขียนทับ','ข้าม'],d.cf)}</label>
+<label class="fxf" style="grid-column:1/3">รูปแบบชื่อไฟล์<input id="fpP" value="${d.pat}" style="width:100%;box-sizing:border-box"></label>
+<label style="grid-column:1/3;font-size:12px;color:var(--text-secondary)"><input type="checkbox" id="fpX"${d.exif?' checked':''}> เก็บข้อมูลเมตา (EXIF)</label>
+</div>
+<div style="display:flex;justify-content:flex-end;gap:8px;margin-top:12px"><button id="fpCa">ยกเลิก</button><button id="fpSv">บันทึก</button></div></div>`;
+$('fxed').append(ov);const close=()=>ov.remove();
+ov.addEventListener('pointerdown',e=>{if(e.target===ov)close()});$('fpCa').onclick=close;
+$('fpQ').oninput=e=>$('fpQo').textContent=e.target.value;$('fpN').oninput=()=>$('fpE').textContent='';
+$('fpSv').onclick=()=>{const v=$('fpN').value.trim();if(!v){$('fpE').textContent='กรุณากรอกชื่อ';return}if(p.on.some((x,j)=>x===v&&j!==i)){$('fpE').textContent='มีชื่อพรีเซ็ตนี้อยู่แล้ว';return}
+DET[v]={fmt:$('fpF').value,q:+$('fpQ').value,size:$('fpZ').value,loc:$('fpL').value,pat:$('fpP').value,cf:$('fpC2').value,exif:$('fpX').checked};p.on[i]=v;close();render(false)}}
+$('fxadd').onclick=()=>{const k='c'+(++nid);P[k]={name:'โปรไฟล์ใหม่ '+nid,ext:'(แก้ไขได้)',on:[],off:['PNG','JPG','PDF','WEBP','TXT','DOCX']};cur=k;render(true)};
+$('fxplay').onclick=()=>render(true);
+$('fxred').onchange=e=>root.classList.toggle('red',e.target.checked);
+render(true);
+</script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.6.0/mammoth.browser.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="app.js?v=5"></script>
+</body>
+</html>
